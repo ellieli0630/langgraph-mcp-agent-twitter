@@ -146,6 +146,37 @@ class TwitterClient:
                 "error": f"Error posting tweet: {str(e)}"
             }
 
+    async def post_ip_minted_tweet(self, ip_id, tx_hash, content_url=None, content_type="image"):
+        """
+        Post a tweet announcing a newly minted IP asset.
+        
+        Args:
+            ip_id (str): The ID of the IP asset
+            tx_hash (str): The transaction hash of the minting transaction
+            content_url (str, optional): URL to the content to include in the tweet
+            content_type (str, optional): Type of content ("image" or "video")
+            
+        Returns:
+            dict: Result of the tweet operation
+        """
+        # Create the tweet text
+        tweet_text = f"🎉 Just minted a new {content_type} as an IP asset on Story Protocol! 🎉\n\n"
+        tweet_text += f"IP ID: {ip_id}\n"
+        tweet_text += f"Transaction: {tx_hash[:8]}...{tx_hash[-6:]}\n\n"
+        tweet_text += f"View on Explorer: https://aeneid.explorer.story.foundation/ipa/{ip_id}\n"
+        tweet_text += f"View on StoryScan: https://aeneid.storyscan.xyz/tx/{tx_hash}\n\n"
+        
+        # Add appropriate hashtags based on content type
+        if content_type == "video":
+            tweet_text += "#StoryProtocol #Web3 #IP #Video #NFT"
+        else:
+            tweet_text += "#StoryProtocol #Web3 #IP #NFT"
+        
+        # Post the tweet
+        result = await self.post_tweet(tweet_text, content_url)
+        
+        return result
+
 async def post_ip_minted_tweet(ip_id, tx_hash, image_url=None):
     """
     Post a tweet announcing a newly minted IP asset.

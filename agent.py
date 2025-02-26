@@ -35,9 +35,69 @@ class AgentState(TypedDict):
 @tool
 def generate_image(prompt: str) -> str:
     """Generate an image using DALL-E 3 based on the prompt."""
-    dalle = DallEAPIWrapper(model="dall-e-3")
+    dalle = DallEAPIWrapper()
     image_url = dalle.run(prompt)
     return f"Generated image URL: {image_url}"
+
+# Create human feedback tool
+@tool
+def get_human_feedback(image_url: str) -> str:
+    """Get human feedback on whether to upload the image to IPFS."""
+    return "feedback"
+
+
+# Create local file upload tool
+@tool
+def upload_local_file(file_path: str) -> str:
+    """
+    Upload a local image or video file.
+    
+    Args:
+        file_path: Path to the local file to upload
+    
+    Returns:
+        The file path if valid, or an error message if invalid
+    """
+    # Validate the file path
+    import os
+    if not os.path.exists(file_path):
+        return f"Error: File not found at {file_path}"
+    
+    # Check if it's a valid image or video file
+    valid_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.mov', '.avi', '.webm']
+    file_ext = os.path.splitext(file_path)[1].lower()
+    
+    if file_ext not in valid_extensions:
+        return f"Error: Unsupported file type. Please use one of: {', '.join(valid_extensions)}"
+    
+    # Check file size (limit to 100MB)
+    file_size = os.path.getsize(file_path)
+    if file_size > 100 * 1024 * 1024:  # 100MB in bytes
+        return f"Error: File size too large. Maximum size is 100MB."
+    
+    # Return the file path for further processing
+    return file_path
+
+# Create Luma video generation tool (placeholder for now)
+@tool
+def generate_luma_video(prompt: str) -> str:
+    """
+    Generate a video using Luma AI based on the prompt.
+    
+    Args:
+        prompt: Description of the video to generate
+    
+    Returns:
+        A placeholder URL for the generated video
+    """
+    # This is a placeholder implementation
+    # In a real implementation, you would call the Luma API here
+    print(f"Generating video with Luma AI: {prompt}")
+    
+    # Return a placeholder URL
+    # In a real implementation, this would be the URL returned by the Luma API
+    import uuid
+    return f"https://example.com/luma-video-{uuid.uuid4()}.mp4"
 
 
 # Create human feedback tool
@@ -112,6 +172,8 @@ def create_graph(ipfs_tools):
             create_metadata_tool,
             mint_register_ip_tool,
             mint_license_tokens_tool,
+            upload_local_file,
+            generate_luma_video
         ]
     )
 
@@ -130,6 +192,8 @@ def create_graph(ipfs_tools):
             tools = {
                 "generate_image": generate_image,
                 "upload_image_to_ipfs": upload_to_ipfs_tool,
+                "upload_local_file": upload_local_file,
+                "generate_luma_video": generate_luma_video
             }
             last_message = state["messages"][-1]
 
@@ -137,28 +201,74 @@ def create_graph(ipfs_tools):
                 try:
                     tool = tools[tool_call["name"]]
 
+                    # Handle local file upload
+                    if tool_call["name"] == "upload_local_file":
+                        file_path = tool_call["args"].get("file_path", "")
+                        result = tool(file_path)
+                        
+                        if isinstance(result, str) and result.startswith("Error:"):
+                            # If there's an error, return it
+                            new_messages.append(
+                                ToolMessage(
+                                    content=result,
+                                    name=tool_call["name"],
+                                    tool_call_id=tool_call["id"],
+                                )
+                            )
+                        else:
+                            # If successful, return the file path for review
+                            new_messages.append(
+                                ToolMessage(
+                                    content=f"File path: {result}",
+                                    name=tool_call["name"],
+                                    tool_call_id=tool_call["id"],
+                                )
+                            )
+                    # Handle Luma video generation
+                    elif tool_call["name"] == "generate_luma_video":
+                        prompt = tool_call["args"].get("prompt", "")
+                        result = tool(prompt)
+                        new_messages.append(
+                            ToolMessage(
+                                content=f"Generated video URL: {result}",
+                                name=tool_call["name"],
+                                tool_call_id=tool_call["id"],
+                            )
+                        )
                     # Extract just the string value for image_data if that's the parameter
-                    if (
+                    elif (
                         tool_call["name"] == "upload_image_to_ipfs"
                         and "image_data" in tool_call["args"]
                     ):
                         # Make sure we're passing just the URL string, not a complex object
                         image_url = tool_call["args"]["image_data"]
                         result = await tool.ainvoke({"image_data": image_url})
+                        
+                        # Make sure result is a string
+                        if not isinstance(result, str):
+                            result = str(result)
+                        
+                        new_messages.append(
+                            ToolMessage(
+                                content=result,
+                                name=tool_call["name"],
+                                tool_call_id=tool_call["id"],
+                            )
+                        )
                     else:
                         result = await tool.ainvoke(tool_call["args"])
 
-                    # Make sure result is a string
-                    if not isinstance(result, str):
-                        result = str(result)
-                    
-                    new_messages.append(
-                        ToolMessage(
-                            content=result,
-                            name=tool_call["name"],
-                            tool_call_id=tool_call["id"],
+                        # Make sure result is a string
+                        if not isinstance(result, str):
+                            result = str(result)
+                        
+                        new_messages.append(
+                            ToolMessage(
+                                content=result,
+                                name=tool_call["name"],
+                                tool_call_id=tool_call["id"],
+                            )
                         )
-                    )
 
                 except Exception as e:
                     new_messages.append(
@@ -169,7 +279,13 @@ def create_graph(ipfs_tools):
                         )
                     )
 
-            return {"messages": new_messages}
+            # Determine next node based on the tool that was called
+            if any(msg.name == "generate_image" for msg in new_messages) or \
+               any(msg.name == "generate_luma_video" for msg in new_messages) or \
+               any(msg.name == "upload_local_file" for msg in new_messages):
+                return {"messages": state["messages"] + new_messages, "next": "human_review_node"}
+            
+            return {"messages": state["messages"] + new_messages}
 
     class RunIPFSTool:
         async def ainvoke(self, state, config=None):
@@ -406,44 +522,6 @@ def create_graph(ipfs_tools):
                 )
 
             return {"messages": new_messages}
-
-    def human_review_node(state):
-        last_message = state["messages"][-1]
-
-        # Get image URL from the tool message
-        image_url = last_message.content.split("Generated image URL: ")[1]
-
-        human_review = interrupt(
-            {"question": "Is this image what you wanted?", "image_url": image_url}
-        )
-
-        if human_review.get("action") == "continue":
-            # If yes, create a tool call to upload to IPFS
-            return {
-                "messages": [
-                    AIMessage(
-                        content="Uploading approved image to IPFS",
-                        tool_calls=[
-                            {
-                                "id": str(uuid.uuid4()),
-                                "name": "upload_image_to_ipfs",
-                                "args": {"image_data": image_url},
-                            }
-                        ],
-                    )
-                ],
-                "next": "run_ipfs_tool",
-            }
-        else:
-            # If no, send feedback to LLM to regenerate
-            return {
-                "messages": [
-                    HumanMessage(
-                        content=f"I don't like that image. {human_review.get('data', 'Please generate a different image.')}"
-                    )
-                ],
-                "next": "call_llm",
-            }
 
     class NegotiateTerms:
         async def ainvoke(self, state, config=None):
@@ -1026,12 +1104,148 @@ def create_graph(ipfs_tools):
                 ]
             }
 
+    class HumanReviewNode:
+        async def ainvoke(self, state, config=None):
+            last_message = state["messages"][-1]
+
+            # Initialize content variables
+            content_url = None
+            content_type = "image"  # Default to image
+            local_file_path = None
+
+            # Check for DALL-E generated image
+            if "Generated image URL:" in last_message.content:
+                content_url = last_message.content.split("Generated image URL: ")[1].strip()
+            
+            # Check for Luma generated video
+            elif "Generated video URL:" in last_message.content:
+                content_url = last_message.content.split("Generated video URL: ")[1].strip()
+                content_type = "video"
+            
+            # Check for local file upload
+            elif "File path:" in last_message.content:
+                local_file_path = last_message.content.split("File path: ")[1].strip()
+                
+                # Determine content type from file extension
+                if local_file_path.lower().endswith(('.mp4', '.mov', '.avi', '.webm')):
+                    content_type = "video"
+                else:
+                    content_type = "image"
+                
+                return {
+                    "messages": [
+                        AIMessage(
+                            content=f"Uploading local {content_type} file to IPFS: {local_file_path}",
+                            tool_calls=[
+                                {
+                                    "id": str(uuid.uuid4()),
+                                    "name": "upload_image_to_ipfs",
+                                    "args": {"image_data": f"file://{local_file_path}"},
+                                }
+                            ],
+                        )
+                    ],
+                    "next": "run_ipfs_tool",
+                }
+            
+            # Check for URLs in the content
+            else:
+                for line in last_message.content.split('\n'):
+                    if line.startswith("http"):
+                        # Extract URL from the message
+                        words = line.split()
+                        for word in words:
+                            if word.startswith("http"):
+                                # Determine content type from URL extension
+                                if any(ext in word.lower() for ext in ['.mp4', '.mov', '.avi', '.webm']):
+                                    content_type = "video"
+                                content_url = word.strip(",.()[]{}\"'")
+                                break
+
+            # If no content URL is found
+            if not content_url and not local_file_path:
+                return {
+                    "messages": [
+                        HumanMessage(
+                            content="I couldn't find an image or video to review. Please try again."
+                        )
+                    ],
+                    "next": "call_llm",
+                }
+
+            # Present content for human review
+            human_review = interrupt(
+                {
+                    "question": f"Is this {content_type} what you wanted?", 
+                    "image_url" if content_type == "image" else "video_url": content_url
+                }
+            )
+
+            if human_review.get("action") == "continue":
+                # If approved, create a tool call to upload to IPFS
+                return {
+                    "messages": [
+                        AIMessage(
+                            content=f"Uploading approved {content_type} to IPFS",
+                            tool_calls=[
+                                {
+                                    "id": str(uuid.uuid4()),
+                                    "name": "upload_image_to_ipfs",
+                                    "args": {"image_data": content_url},
+                                }
+                            ],
+                        )
+                    ],
+                    "next": "run_ipfs_tool",
+                }
+            else:
+                # If rejected, send feedback to LLM to regenerate
+                return {
+                    "messages": [
+                        HumanMessage(
+                            content=f"I don't like that {content_type}. {human_review.get('data', f'Please generate a different {content_type}.')}"
+                        )
+                    ],
+                    "next": "call_llm",
+                }
+
+    class HandleFailedGeneration:
+        async def ainvoke(self, state, config=None):
+            # Get the original prompt from the human message
+            original_prompt = ""
+            for message in state["messages"]:
+                if isinstance(message, HumanMessage) and "Generate" in message.content:
+                    original_prompt = message.content.replace("Generate ", "")
+                    break
+        
+            print(f"\nUnable to generate image of {original_prompt}")
+            new_prompt = input("Please try a different prompt: ")
+        
+            return {
+                "messages": [
+                    SystemMessage(content="""You are an assistant that helps users create and mint IP assets on Story Protocol.
+Your goal is to guide the user through the process of:
+1. Generating an image based on their prompt
+2. Uploading the image to IPFS
+3. Creating metadata for the IP asset
+4. Negotiating terms for the IP asset
+5. Minting and registering the IP asset
+6. Minting license tokens
+7. Posting about the minted IP asset on Twitter
+
+Use the available tools to accomplish these tasks. When generating images, use the generate_image tool.
+"""),
+                    HumanMessage(content=f"Generate {new_prompt}")
+                ],
+                "next": "call_llm"  # Go back to the LLM with the new prompt
+            }
+
     workflow = StateGraph(State)
 
     workflow.add_node("call_llm", RunnableLambda(CallLLM().ainvoke))
     workflow.add_node("run_tool", RunnableLambda(RunTool().ainvoke))
     workflow.add_node("run_ipfs_tool", RunnableLambda(RunIPFSTool().ainvoke))
-    workflow.add_node("human_review_node", RunnableLambda(human_review_node))
+    workflow.add_node("human_review_node", RunnableLambda(HumanReviewNode().ainvoke))
     workflow.add_node("generate_metadata", RunnableLambda(GenerateMetadata().ainvoke))
     workflow.add_node("create_metadata", RunnableLambda(CreateMetadata().ainvoke))
     workflow.add_node("negotiate_terms", RunnableLambda(NegotiateTerms().ainvoke))
@@ -1040,6 +1254,7 @@ def create_graph(ipfs_tools):
         "mint_license_tokens", RunnableLambda(MintLicenseTokens().ainvoke)
     )
     workflow.add_node("post_to_twitter", RunnableLambda(PostToTwitter().ainvoke))
+    workflow.add_node("handle_failed_generation", RunnableLambda(HandleFailedGeneration().ainvoke))
 
     # Start -> call LLM to generate image
     workflow.add_edge(START, "call_llm")
@@ -1050,14 +1265,26 @@ def create_graph(ipfs_tools):
     # Run tool -> human review (only for image generation)
     workflow.add_conditional_edges(
         "run_tool",
-        lambda x: "human_review_node"
-        if (
-            x["messages"]
-            and isinstance(x["messages"][-1], ToolMessage)
-            and x["messages"][-1].name == "generate_image"
-            and "Generated image URL:" in x["messages"][-1].content
+        lambda x: x.get("next", 
+            "human_review_node" 
+            if (
+                x["messages"]
+                and isinstance(x["messages"][-1], ToolMessage)
+                and x["messages"][-1].name in ["generate_image", "generate_luma_video", "upload_local_file"]
+                and (
+                    "Generated image URL:" in x["messages"][-1].content
+                    or "Generated video URL:" in x["messages"][-1].content
+                    or "File path:" in x["messages"][-1].content
+                )
+            )
+            else "handle_failed_generation" if (
+                x["messages"]
+                and isinstance(x["messages"][-1], ToolMessage)
+                and x["messages"][-1].name in ["generate_image", "generate_luma_video", "upload_local_file"]
+                and "Error:" in x["messages"][-1].content
+            )
+            else "call_llm"
         )
-        else "handle_failed_generation"  # New node to handle failed generation
     )
 
     # Human review -> either run IPFS tool or call LLM again based on response
@@ -1087,41 +1314,7 @@ def create_graph(ipfs_tools):
     # Post to Twitter -> END
     workflow.add_edge("post_to_twitter", END)
 
-    # Add a new node to handle failed generation
-    def handle_failed_generation(state):
-        # Get the original prompt from the human message
-        original_prompt = ""
-        for message in state["messages"]:
-            if isinstance(message, HumanMessage) and "Generate" in message.content:
-                original_prompt = message.content.replace("Generate ", "")
-                break
-        
-        print(f"\nUnable to generate image of {original_prompt}")
-        new_prompt = input("Please try a different prompt: ")
-        
-        return {
-            "messages": [
-                SystemMessage(content="""You are an assistant that helps users create and mint IP assets on Story Protocol.
-Your goal is to guide the user through the process of:
-1. Generating an image based on their prompt
-2. Uploading the image to IPFS
-3. Creating metadata for the IP asset
-4. Negotiating terms for the IP asset
-5. Minting and registering the IP asset
-6. Minting license tokens
-7. Posting about the minted IP asset on Twitter
-
-Use the available tools to accomplish these tasks. When generating images, use the generate_image tool.
-"""),
-                HumanMessage(content=f"Generate {new_prompt}")
-            ],
-            "next": "call_llm"  # Go back to the LLM with the new prompt
-        }
-
-    # Add the new node to the workflow
-    workflow.add_node("handle_failed_generation", RunnableLambda(handle_failed_generation))
-
-    # Set up memory
+    # Add memory to graph compilation
     memory = MemorySaver()
 
     # Add memory to graph compilation
@@ -1165,21 +1358,62 @@ async def run_agent():
         # Prompt the user for what image they want to create
         print("\n=== Story IP Creator ===")
         print(
-            "This tool will help you create and mint an image as an IP asset in the Story ecosystem.\n"
+            "This tool will help you create and mint an image or video as an IP asset in the Story ecosystem.\n"
         )
 
-        image_prompt = input(
-            "What image would you like to create? (e.g., 'an anime style image of a person snowboarding'): "
-        )
-        if not image_prompt:
-            image_prompt = (
-                "an anime style image of a person snowboarding"  # Default if empty
+        # Present asset creation options
+        print("Please select an option for creating your IP asset:")
+        print("1. Upload a local image or video file")
+        print("2. Generate an image using OpenAI DALL-E")
+        print("3. Generate a video using Luma API")
+        
+        # Get user choice
+        while True:
+            try:
+                choice = int(input("\nEnter your choice (1-3): "))
+                if 1 <= choice <= 3:
+                    break
+                print("Please enter a number between 1 and 3.")
+            except ValueError:
+                print("Please enter a valid number.")
+        
+        # Handle user choice
+        if choice == 1:
+            # Local file upload
+            file_path = input("\nEnter the path to your image or video file: ")
+            initial_input = {
+                "messages": [
+                    SystemMessage(content="""You are an assistant that helps users create and mint IP assets on Story Protocol.
+Your goal is to guide the user through the process of:
+1. Uploading a local file
+2. Uploading the file to IPFS
+3. Creating metadata for the IP asset
+4. Negotiating terms for the IP asset
+5. Minting and registering the IP asset
+6. Minting license tokens
+7. Posting about the minted IP asset on Twitter
+
+Use the available tools to accomplish these tasks. When uploading files, use the upload_local_file tool.
+"""),
+                    HumanMessage(content=f"Upload this file: {file_path}")
+                ]
+            }
+            print("\nStarting the upload process...\n")
+            
+        elif choice == 2:
+            # OpenAI image generation
+            image_prompt = input(
+                "\nWhat image would you like to create? (e.g., 'an anime style image of a person snowboarding'): "
             )
-            print(f"Using default prompt: '{image_prompt}'")
+            if not image_prompt:
+                image_prompt = (
+                    "an anime style image of a person snowboarding"  # Default if empty
+                )
+                print(f"Using default prompt: '{image_prompt}'")
 
-        initial_input = {
-            "messages": [
-                SystemMessage(content="""You are an assistant that helps users create and mint IP assets on Story Protocol.
+            initial_input = {
+                "messages": [
+                    SystemMessage(content="""You are an assistant that helps users create and mint IP assets on Story Protocol.
 Your goal is to guide the user through the process of:
 1. Generating an image based on their prompt
 2. Uploading the image to IPFS
@@ -1191,14 +1425,43 @@ Your goal is to guide the user through the process of:
 
 Use the available tools to accomplish these tasks. When generating images, use the generate_image tool.
 """),
-                HumanMessage(content=f"Generate {image_prompt}")
-            ]
-        }
+                    HumanMessage(content=f"Generate {image_prompt}")
+                ]
+            }
+            print("\nStarting the image generation process...\n")
+            
+        elif choice == 3:
+            # Luma video generation
+            video_prompt = input(
+                "\nWhat video would you like to create? (e.g., 'a short clip of a sunset over mountains'): "
+            )
+            if not video_prompt:
+                video_prompt = (
+                    "a short clip of a sunset over mountains"  # Default if empty
+                )
+                print(f"Using default prompt: '{video_prompt}'")
+
+            initial_input = {
+                "messages": [
+                    SystemMessage(content="""You are an assistant that helps users create and mint IP assets on Story Protocol.
+Your goal is to guide the user through the process of:
+1. Generating a video based on their prompt
+2. Uploading the video to IPFS
+3. Creating metadata for the IP asset
+4. Negotiating terms for the IP asset
+5. Minting and registering the IP asset
+6. Minting license tokens
+7. Posting about the minted IP asset on Twitter
+
+Use the available tools to accomplish these tasks. When generating videos, use the generate_luma_video tool.
+"""),
+                    HumanMessage(content=f"Generate video: {video_prompt}")
+                ]
+            }
+            print("\nStarting the video generation process...\n")
 
         # Add thread_id to the config
         config = {"configurable": {"thread_id": thread_id}}
-
-        print("\nStarting the creation process...\n")
 
         # Process all events and handle interrupts at any stage
         async def process_events(input_data):
