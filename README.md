@@ -7,7 +7,7 @@ This repository contains an agent that helps users create and mint IP assets on 
 - **Multiple Content Creation Options**:
   - Upload local image/video files
   - Generate images using OpenAI DALL-E
-  - Generate videos using Luma AI (placeholder implementation)
+  - Generate videos using Luma AI (placeholder implementation) (WIP! Got video to generate by Luma, but stuck at uploading to IPFS and ran out of time :/) 
 
 - **Comprehensive IP Asset Workflow**:
   - Content creation and review
